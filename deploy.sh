@@ -36,4 +36,4 @@ echo "==> 启动服务"
 nohup npx tsx server/index.ts > logs/app.log 2>&1 &
 echo $! > logs/app.pid
 echo "已启动 PID=$(cat logs/app.pid) 日志: logs/app.log"
-echo "默认端口见 .env 中 PORT（默认 3000）。域名请用 Nginx 反代到该端口，详见 docs/02-部署指导.md"
+echo "默认端口见 .env 中 PORT（默认 3005）。域名请用 Nginx 反代到该端口，详见 docs/02-部署指导.md"
