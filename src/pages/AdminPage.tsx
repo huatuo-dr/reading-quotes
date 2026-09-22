@@ -13,6 +13,8 @@ export default function AdminPage() {
   const [yearFilter, setYearFilter] = useState<'all' | number>('all')
   const [form, setForm] = useState(emptyForm)
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [loginOpen, setLoginOpen] = useState(false)
+  const [editorOpen, setEditorOpen] = useState(false)
   const [message, setMessage] = useState('')
   const [gitFail, setGitFail] = useState<{ at: string; message: string } | null>(null)
   const [busy, setBusy] = useState(false)
@@ -53,6 +55,12 @@ export default function AdminPage() {
     })
   }, [quotes, query, yearFilter])
 
+  const closeEditor = () => {
+    setEditorOpen(false)
+    setEditingId(null)
+    setForm(emptyForm)
+  }
+
   const onLogin = async (e: FormEvent) => {
     e.preventDefault()
     setBusy(true)
@@ -60,6 +68,7 @@ export default function AdminPage() {
     try {
       await api.login(username, password)
       setPassword('')
+      setLoginOpen(false)
       await refresh()
       setMessage('已登录')
     } catch (err) {
@@ -73,6 +82,7 @@ export default function AdminPage() {
     await api.logout()
     setAuthed(false)
     setGitFail(null)
+    closeEditor()
     setMessage('已登出')
   }
 
@@ -98,8 +108,7 @@ export default function AdminPage() {
             : '已新增并同步'
           : `已保存，但 Git 同步失败：${res.git.message}`,
       )
-      setForm(emptyForm)
-      setEditingId(null)
+      closeEditor()
       await refresh()
     } catch (err) {
       setMessage(err instanceof Error ? err.message : String(err))
@@ -108,9 +117,16 @@ export default function AdminPage() {
     }
   }
 
-  const onEdit = (q: Quote) => {
+  const openCreate = () => {
+    setEditingId(null)
+    setForm(emptyForm)
+    setEditorOpen(true)
+  }
+
+  const openEdit = (q: Quote) => {
     setEditingId(q.id)
     setForm({ content: q.content, author: q.author, book: q.book, year: q.year })
+    setEditorOpen(true)
   }
 
   const onDelete = async (id: string) => {
@@ -148,55 +164,43 @@ export default function AdminPage() {
     <div className="min-h-screen bg-[#0b1020] px-4 py-8 text-slate-100">
       <div className="mx-auto max-w-5xl space-y-6">
         <header className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">摘抄后台</h1>
-            <p className="text-sm text-slate-400">搜索 · 按年筛选 · 登录后可增删改</p>
+          <h1 className="text-2xl font-semibold tracking-tight">摘抄后台</h1>
+          <div className="flex flex-wrap items-center gap-2">
+            {!authed ? (
+              <button
+                type="button"
+                onClick={() => setLoginOpen(true)}
+                className="rounded-lg border border-white/10 px-3 py-2 text-sm hover:bg-white/5"
+              >
+                登录
+              </button>
+            ) : (
+              <>
+                <span className="text-sm text-emerald-300">已登录</span>
+                <button
+                  type="button"
+                  onClick={openCreate}
+                  className="rounded-lg bg-amber-500/90 px-3 py-2 text-sm font-medium text-black"
+                >
+                  新增
+                </button>
+                <button
+                  type="button"
+                  onClick={onLogout}
+                  className="rounded-lg border border-white/10 px-3 py-2 text-sm hover:bg-white/5"
+                >
+                  登出
+                </button>
+              </>
+            )}
+            <Link
+              to="/"
+              className="rounded-lg border border-white/10 px-3 py-2 text-sm hover:bg-white/5"
+            >
+              返回
+            </Link>
           </div>
-          <Link
-            to="/"
-            className="rounded-lg border border-white/10 px-3 py-2 text-sm hover:bg-white/5"
-          >
-            返回首页
-          </Link>
         </header>
-
-        {!authed ? (
-          <form
-            onSubmit={onLogin}
-            className="max-w-md space-y-3 rounded-2xl border border-white/10 bg-white/5 p-4"
-          >
-            <h2 className="font-medium">登录</h2>
-            <input
-              className="w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2"
-              placeholder="用户名"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-            />
-            <input
-              type="password"
-              className="w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2"
-              placeholder="密码"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-            <button
-              disabled={busy}
-              className="rounded-lg bg-amber-500/90 px-4 py-2 font-medium text-black disabled:opacity-50"
-            >
-              登录
-            </button>
-          </form>
-        ) : (
-          <div className="flex flex-wrap items-center gap-3">
-            <span className="text-sm text-emerald-300">已登录</span>
-            <button
-              onClick={onLogout}
-              className="rounded-lg border border-white/10 px-3 py-1.5 text-sm"
-            >
-              登出
-            </button>
-          </div>
-        )}
 
         {gitFail && authed && (
           <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm">
@@ -204,6 +208,7 @@ export default function AdminPage() {
               Git 同步失败（{gitFail.at}）：{gitFail.message}
             </p>
             <button
+              type="button"
               onClick={onRetryGit}
               className="mt-2 rounded-lg bg-amber-500/90 px-3 py-1.5 text-black"
             >
@@ -216,86 +221,28 @@ export default function AdminPage() {
 
         <div className="flex flex-col gap-3 sm:flex-row">
           <input
-            className="flex-1 rounded-xl border border-white/10 bg-white/5 px-3 py-2"
+            className="flex-1 rounded-xl border border-white/15 bg-[#151b2e] px-3 py-2 text-slate-100 placeholder:text-slate-500"
             placeholder="搜索内容 / 作者 / 书名"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
           <select
-            className="rounded-xl border border-white/10 bg-white/5 px-3 py-2"
+            className="rounded-xl border border-white/15 bg-[#151b2e] px-3 py-2 text-slate-100"
             value={yearFilter === 'all' ? 'all' : String(yearFilter)}
             onChange={(e) =>
               setYearFilter(e.target.value === 'all' ? 'all' : Number(e.target.value))
             }
           >
-            <option value="all">全部年份</option>
+            <option value="all" className="bg-[#151b2e] text-slate-100">
+              全部年份
+            </option>
             {years.map((y) => (
-              <option key={y} value={y}>
+              <option key={y} value={y} className="bg-[#151b2e] text-slate-100">
                 {y} 年
               </option>
             ))}
           </select>
         </div>
-
-        {authed && (
-          <form
-            onSubmit={onSubmit}
-            className="space-y-3 rounded-2xl border border-white/10 bg-white/5 p-4"
-          >
-            <h2 className="font-medium">{editingId ? '编辑摘抄' : '新增摘抄'}</h2>
-            <textarea
-              required
-              className="min-h-28 w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2"
-              placeholder="内容"
-              value={form.content}
-              onChange={(e) => setForm({ ...form, content: e.target.value })}
-            />
-            <div className="grid gap-3 sm:grid-cols-3">
-              <input
-                required
-                className="rounded-lg border border-white/10 bg-black/30 px-3 py-2"
-                placeholder="作者"
-                value={form.author}
-                onChange={(e) => setForm({ ...form, author: e.target.value })}
-              />
-              <input
-                required
-                className="rounded-lg border border-white/10 bg-black/30 px-3 py-2"
-                placeholder="书名"
-                value={form.book}
-                onChange={(e) => setForm({ ...form, book: e.target.value })}
-              />
-              <input
-                required
-                type="number"
-                className="rounded-lg border border-white/10 bg-black/30 px-3 py-2"
-                placeholder="阅读年份"
-                value={form.year}
-                onChange={(e) => setForm({ ...form, year: Number(e.target.value) })}
-              />
-            </div>
-            <div className="flex gap-2">
-              <button
-                disabled={busy}
-                className="rounded-lg bg-amber-500/90 px-4 py-2 text-black disabled:opacity-50"
-              >
-                {editingId ? '保存' : '新增'}
-              </button>
-              {editingId && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditingId(null)
-                    setForm(emptyForm)
-                  }}
-                  className="rounded-lg border border-white/10 px-4 py-2"
-                >
-                  取消
-                </button>
-              )}
-            </div>
-          </form>
-        )}
 
         <section className="space-y-3">
           <h2 className="text-sm tracking-wide text-slate-400">共 {filtered.length} 条</h2>
@@ -303,17 +250,19 @@ export default function AdminPage() {
             <article key={q.id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
               <p className="leading-relaxed text-slate-100">{q.content}</p>
               <p className="mt-2 text-sm text-slate-400">
-                {q.author} · 《{q.book}》 · {q.year}
+                {[q.author, q.book ? `《${q.book}》` : '', String(q.year)].filter(Boolean).join(' · ')}
               </p>
               {authed && (
                 <div className="mt-3 flex gap-2">
                   <button
-                    onClick={() => onEdit(q)}
+                    type="button"
+                    onClick={() => openEdit(q)}
                     className="rounded-lg border border-white/10 px-3 py-1 text-sm"
                   >
                     编辑
                   </button>
                   <button
+                    type="button"
                     onClick={() => onDelete(q.id)}
                     className="rounded-lg border border-rose-400/30 px-3 py-1 text-sm text-rose-300"
                   >
@@ -326,6 +275,111 @@ export default function AdminPage() {
           {!filtered.length && <p className="text-slate-500">没有匹配的摘抄。</p>}
         </section>
       </div>
+
+      {loginOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <form
+            onSubmit={onLogin}
+            className="w-full max-w-md space-y-3 rounded-2xl border border-white/15 bg-[#121826] p-5 shadow-xl"
+          >
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-medium">登录</h2>
+              <button
+                type="button"
+                onClick={() => setLoginOpen(false)}
+                className="rounded-lg px-2 py-1 text-slate-400 hover:bg-white/5 hover:text-white"
+              >
+                关闭
+              </button>
+            </div>
+            <input
+              className="w-full rounded-lg border border-white/15 bg-[#0b1020] px-3 py-2 text-slate-100 placeholder:text-slate-500"
+              placeholder="用户名"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              autoFocus
+            />
+            <input
+              type="password"
+              className="w-full rounded-lg border border-white/15 bg-[#0b1020] px-3 py-2 text-slate-100 placeholder:text-slate-500"
+              placeholder="密码"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+            <button
+              disabled={busy}
+              className="w-full rounded-lg bg-amber-500/90 px-4 py-2 font-medium text-black disabled:opacity-50"
+            >
+              登录
+            </button>
+          </form>
+        </div>
+      )}
+
+      {editorOpen && authed && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <form
+            onSubmit={onSubmit}
+            className="w-full max-w-lg space-y-3 rounded-2xl border border-white/15 bg-[#121826] p-5 shadow-xl"
+          >
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-medium">{editingId ? '编辑摘抄' : '新增摘抄'}</h2>
+              <button
+                type="button"
+                onClick={closeEditor}
+                className="rounded-lg px-2 py-1 text-slate-400 hover:bg-white/5 hover:text-white"
+              >
+                关闭
+              </button>
+            </div>
+            <textarea
+              required
+              className="min-h-28 w-full rounded-lg border border-white/15 bg-[#0b1020] px-3 py-2 text-slate-100 placeholder:text-slate-500"
+              placeholder="内容"
+              value={form.content}
+              onChange={(e) => setForm({ ...form, content: e.target.value })}
+              autoFocus
+            />
+            <div className="grid gap-3 sm:grid-cols-3">
+              <input
+                className="rounded-lg border border-white/15 bg-[#0b1020] px-3 py-2 text-slate-100 placeholder:text-slate-500"
+                placeholder="作者"
+                value={form.author}
+                onChange={(e) => setForm({ ...form, author: e.target.value })}
+              />
+              <input
+                className="rounded-lg border border-white/15 bg-[#0b1020] px-3 py-2 text-slate-100 placeholder:text-slate-500"
+                placeholder="书名"
+                value={form.book}
+                onChange={(e) => setForm({ ...form, book: e.target.value })}
+              />
+              <input
+                required
+                type="number"
+                className="rounded-lg border border-white/15 bg-[#0b1020] px-3 py-2 text-slate-100 placeholder:text-slate-500"
+                placeholder="阅读年份"
+                value={form.year}
+                onChange={(e) => setForm({ ...form, year: Number(e.target.value) })}
+              />
+            </div>
+            <div className="flex gap-2">
+              <button
+                disabled={busy}
+                className="rounded-lg bg-amber-500/90 px-4 py-2 text-black disabled:opacity-50"
+              >
+                {editingId ? '保存' : '新增'}
+              </button>
+              <button
+                type="button"
+                onClick={closeEditor}
+                className="rounded-lg border border-white/10 px-4 py-2"
+              >
+                取消
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   )
 }

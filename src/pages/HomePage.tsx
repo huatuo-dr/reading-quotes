@@ -73,12 +73,12 @@ export default function HomePage() {
           >
             <p className="mb-8 text-xs tracking-[0.35em] text-amber-200/70 uppercase">Reading Quotes</p>
             <blockquote className="text-3xl leading-relaxed text-balance text-[#f7f1e6] sm:text-4xl md:text-5xl md:leading-snug">
-              “{current.content}”
+              {current.content}
             </blockquote>
             <div className="mt-10 space-y-2 text-amber-100/80">
-              <p className="text-lg">— {current.author}</p>
+              {current.author ? <p className="text-lg">— {current.author}</p> : null}
               <p className="text-sm tracking-wide text-white/55">
-                《{current.book}》 · {yearLabel}
+                {current.book ? `《${current.book}》 · ${yearLabel}` : yearLabel}
               </p>
             </div>
           </div>

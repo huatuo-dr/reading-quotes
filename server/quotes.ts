@@ -49,7 +49,7 @@ export function validateQuoteInput(body: unknown): Omit<Quote, 'id'> {
   const author = String(b.author ?? '').trim()
   const book = String(b.book ?? '').trim()
   const year = Number(b.year)
-  if (!content || !author || !book) throw new Error('content, author, book are required')
+  if (!content) throw new Error('content is required')
   if (!Number.isInteger(year)) throw new Error('year must be an integer')
   return { content, author, book, year }
 }
