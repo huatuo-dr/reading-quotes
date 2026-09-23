@@ -35,6 +35,32 @@ async function git(args: string[], env?: NodeJS.ProcessEnv) {
   })
 }
 
+async function commitsAheadOfOrigin(branch: string): Promise<number> {
+  try {
+    const { stdout } = await git(['rev-list', '--count', `origin/${branch}..HEAD`])
+    const n = Number.parseInt(stdout.trim(), 10)
+    return Number.isFinite(n) ? n : 0
+  } catch {
+    // origin/<branch> 可能尚不存在：保守视为有待推送
+    try {
+      const { stdout } = await git(['rev-parse', 'HEAD'])
+      return stdout.trim() ? 1 : 0
+    } catch {
+      return 0
+    }
+  }
+}
+
+async function pushHead(token: string, branch: string): Promise<void> {
+  let remote = process.env.GIT_REMOTE_URL?.trim()
+  if (!remote) {
+    const { stdout } = await git(['remote', 'get-url', 'origin'])
+    remote = stdout.trim()
+  }
+  const authed = remote.replace(/^https:\/\//, `https://x-access-token:${token}@`)
+  await git(['-c', 'http.version=HTTP/1.1', 'push', authed, `HEAD:${branch}`])
+}
+
 export function syncQuotesToRemote(action: 'add' | 'update' | 'delete', id: string): Promise<GitSyncResult> {
   return enqueue(async () => {
     if (process.env.GIT_ENABLED === 'false') {
@@ -52,32 +78,32 @@ export function syncQuotesToRemote(action: 'add' | 'update' | 'delete', id: stri
       await git(['config', 'user.email', email])
       await git(['add', 'data/quotes.json'])
       const status = await git(['status', '--porcelain', 'data/quotes.json'])
-      if (!status.stdout.trim()) {
-        lastFailure = null
-        return { ok: true, message: 'nothing to commit' }
+      const hasChanges = Boolean(status.stdout.trim())
+
+      if (hasChanges) {
+        await git(['commit', '-m', `chore(quotes): ${action} ${id}`])
+      } else {
+        const ahead = await commitsAheadOfOrigin(branch)
+        if (ahead <= 0) {
+          lastFailure = null
+          return { ok: true, message: 'nothing to commit' }
+        }
+        // 工作区干净但本地仍领先远端：继续 push（覆盖先前 push 失败留下的 commit）
       }
-      await git(['commit', '-m', `chore(quotes): ${action} ${id}`])
 
       if (!token) {
         lastFailure = {
           at: new Date().toISOString(),
-          message: 'committed locally but GIT_TOKEN is empty; push skipped',
+          message: hasChanges
+            ? 'committed locally but GIT_TOKEN is empty; push skipped'
+            : 'local commits ahead of origin but GIT_TOKEN is empty; push skipped',
         }
         return { ok: false, message: lastFailure.message }
       }
 
-      let remote = process.env.GIT_REMOTE_URL?.trim()
-      if (!remote) {
-        const { stdout } = await git(['remote', 'get-url', 'origin'])
-        remote = stdout.trim()
-      }
-      const authed = remote.replace(
-        /^https:\/\//,
-        `https://x-access-token:${token}@`,
-      )
-      await git(['push', authed, `HEAD:${branch}`])
+      await pushHead(token, branch)
       lastFailure = null
-      return { ok: true, message: 'pushed' }
+      return { ok: true, message: hasChanges ? 'pushed' : 'pushed pending commits' }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       lastFailure = { at: new Date().toISOString(), message }

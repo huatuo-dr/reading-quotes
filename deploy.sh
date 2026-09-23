@@ -15,7 +15,7 @@ usage() {
   help      显示本说明
   deploy    安装依赖、构建前端并重启服务（全量部署）
   start     若未运行则启动服务（读 .env 的 PORT）
-  stop      停止服务（优先 pid 文件，否则按 PORT 查找）
+  stop      停止服务（以监听 PORT 的进程为准）
   restart   先 stop 再 start（不重新 install/build）
   status    显示是否在跑、PID、PORT、监听状态
   log       跟踪 logs/app.log（tail -f）
@@ -72,115 +72,211 @@ pid_listening_on_port() {
   fi
 }
 
+# 以监听 PORT 的进程为准；pid 文件仅作回退（可能是已退出的壳）
 resolve_running_pid() {
   local port pid
   port="$(port_from_env)"
-  if pid="$(pid_from_file)"; then
+  pid="$(pid_listening_on_port "$port" || true)"
+  if [[ -n "${pid:-}" ]]; then
     echo "$pid"
     return 0
   fi
-  pid="$(pid_listening_on_port "$port" || true)"
-  if [[ -n "${pid:-}" ]]; then
+  if pid="$(pid_from_file)"; then
     echo "$pid"
     return 0
   fi
   return 1
 }
 
+kill_pid_tree() {
+  local pid="$1"
+  # 先杀子进程，再杀自身（覆盖 npm/npx 父进程 + node 子进程）
+  if command -v pkill >/dev/null; then
+    pkill -P "$pid" 2>/dev/null || true
+  fi
+  kill "$pid" 2>/dev/null || true
+}
+
+wait_until_dead() {
+  local pid="$1"
+  local i
+  for i in 1 2 3 4 5 6 7 8; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    if command -v pkill >/dev/null; then
+      pkill -9 -P "$pid" 2>/dev/null || true
+    fi
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+}
+
+wait_port_free() {
+  local port="$1"
+  local i listener
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    listener="$(pid_listening_on_port "$port" || true)"
+    if [[ -z "${listener:-}" ]]; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  return 1
+}
+
+wait_port_listen() {
+  local port="$1"
+  local i listener
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    listener="$(pid_listening_on_port "$port" || true)"
+    if [[ -n "${listener:-}" ]]; then
+      echo "$listener"
+      return 0
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+
+stop_service() {
+  local port pid file_pid
+  port="$(port_from_env)"
+
+  pid="$(pid_listening_on_port "$port" || true)"
+  file_pid="$(pid_from_file || true)"
+
+  if [[ -z "${pid:-}" && -z "${file_pid:-}" ]]; then
+    rm -f "$PID_FILE"
+    return 1
+  fi
+
+  if [[ -n "${pid:-}" ]]; then
+    echo "==> 停止监听 :${port} 的进程 PID=${pid}"
+    kill_pid_tree "$pid"
+    wait_until_dead "$pid"
+  fi
+
+  # pid 文件可能是 npm/npx 父进程，与监听 PID 不同，一并清理
+  if [[ -n "${file_pid:-}" && "${file_pid}" != "${pid:-}" ]]; then
+    echo "==> 清理 pid 文件中的进程 PID=${file_pid}"
+    kill_pid_tree "$file_pid"
+    wait_until_dead "$file_pid"
+  fi
+
+  # 端口仍被占则再杀一次监听者
+  pid="$(pid_listening_on_port "$port" || true)"
+  if [[ -n "${pid:-}" ]]; then
+    echo "==> 端口仍被占用，强制结束 PID=${pid}"
+    kill_pid_tree "$pid"
+    wait_until_dead "$pid"
+    if command -v fuser >/dev/null; then
+      fuser -k "${port}/tcp" 2>/dev/null || true
+    fi
+  fi
+
+  if ! wait_port_free "$port"; then
+    echo "警告: 停止后端口 ${port} 仍被占用" >&2
+  fi
+  rm -f "$PID_FILE"
+  return 0
+}
+
+start_service() {
+  local port listener tsx_bin
+  port="$(port_from_env)"
+
+  if listener="$(pid_listening_on_port "$port")"; then
+    echo "$listener" > "$PID_FILE"
+    echo "服务已在运行 PID=${listener} PORT=${port}"
+    return 0
+  fi
+
+  export NODE_ENV="${NODE_ENV:-production}"
+  mkdir -p logs
+
+  # 直接跑本地 tsx，避免 npx/npm 多一层父进程导致 pid 错位
+  if [[ -x "node_modules/.bin/tsx" ]]; then
+    tsx_bin="node_modules/.bin/tsx"
+  else
+    tsx_bin="npx"
+  fi
+
+  echo "==> 启动服务 (PORT=${port})"
+  if [[ "$tsx_bin" == "npx" ]]; then
+    # 仍可能有父进程；启动后会用监听 PID 覆盖 pid 文件
+    nohup npx tsx server/index.ts > "$LOG_FILE" 2>&1 &
+    echo $! > "$PID_FILE"
+  else
+    nohup "$tsx_bin" server/index.ts > "$LOG_FILE" 2>&1 &
+    echo $! > "$PID_FILE"
+  fi
+
+  if ! listener="$(wait_port_listen "$port")"; then
+    echo "启动失败：端口 ${port} 未监听，请查看 ${LOG_FILE}" >&2
+    # 清理可能残留的壳进程
+    if [[ -f "$PID_FILE" ]]; then
+      kill_pid_tree "$(tr -d '[:space:]' < "$PID_FILE")" || true
+    fi
+    rm -f "$PID_FILE"
+    return 1
+  fi
+
+  echo "$listener" > "$PID_FILE"
+  echo "已启动 PID=${listener} 日志: ${LOG_FILE}"
+  return 0
+}
+
 cmd_start() {
   load_env
   ensure_node
   mkdir -p logs
-  local port pid
-  port="$(port_from_env)"
-  if pid="$(resolve_running_pid)"; then
-    echo "服务已在运行 PID=${pid} PORT=${port}"
-    exit 0
-  fi
-  export NODE_ENV=production
-  echo "==> 启动服务 (PORT=${port})"
-  nohup npx tsx server/index.ts > "$LOG_FILE" 2>&1 &
-  echo $! > "$PID_FILE"
-  sleep 1
-  if ! kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-    echo "启动失败，请查看 ${LOG_FILE}" >&2
-    exit 1
-  fi
-  echo "已启动 PID=$(cat "$PID_FILE") 日志: ${LOG_FILE}"
+  start_service
 }
 
 cmd_stop() {
   load_env
-  local port pid
+  local port
   port="$(port_from_env)"
-  if ! pid="$(resolve_running_pid)"; then
+  if stop_service; then
+    echo "已停止"
+  else
     echo "服务未在运行 (PORT=${port})"
-    rm -f "$PID_FILE"
-    exit 0
   fi
-  echo "==> 停止进程 PID=${pid}"
-  kill "$pid" 2>/dev/null || true
-  for _ in 1 2 3 4 5; do
-    if ! kill -0 "$pid" 2>/dev/null; then
-      break
-    fi
-    sleep 1
-  done
-  if kill -0 "$pid" 2>/dev/null; then
-    echo "进程未退出，发送 SIGKILL" >&2
-    kill -9 "$pid" 2>/dev/null || true
-  fi
-  rm -f "$PID_FILE"
-  echo "已停止"
 }
 
 cmd_restart() {
   load_env
   ensure_node
   mkdir -p logs
-  # stop without exiting early when already stopped
-  local port pid
-  port="$(port_from_env)"
-  if pid="$(resolve_running_pid)"; then
-    echo "==> 停止进程 PID=${pid}"
-    kill "$pid" 2>/dev/null || true
-    for _ in 1 2 3 4 5; do
-      if ! kill -0 "$pid" 2>/dev/null; then
-        break
-      fi
-      sleep 1
-    done
-    if kill -0 "$pid" 2>/dev/null; then
-      kill -9 "$pid" 2>/dev/null || true
-    fi
-    rm -f "$PID_FILE"
-  else
+  if ! stop_service; then
     echo "服务未在运行，将直接启动"
-    rm -f "$PID_FILE"
   fi
-  export NODE_ENV=production
-  echo "==> 启动服务 (PORT=${port})"
-  nohup npx tsx server/index.ts > "$LOG_FILE" 2>&1 &
-  echo $! > "$PID_FILE"
-  sleep 1
-  if ! kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-    echo "启动失败，请查看 ${LOG_FILE}" >&2
-    exit 1
-  fi
-  echo "已重启 PID=$(cat "$PID_FILE") 日志: ${LOG_FILE}"
+  start_service
 }
 
 cmd_status() {
   load_env
-  local port pid
+  local port pid file_pid
   port="$(port_from_env)"
-  if pid="$(resolve_running_pid)"; then
+  pid="$(pid_listening_on_port "$port" || true)"
+  file_pid="$(pid_from_file || true)"
+  if [[ -n "${pid:-}" ]]; then
     echo "状态: 运行中"
-    echo "PID:  ${pid}"
+    echo "PID:  ${pid}（监听 :${port}）"
     echo "PORT: ${port}"
-    if command -v ss >/dev/null; then
-      ss -lntp 2>/dev/null | grep -E ":${port}\\b" || echo "监听: 未在 ss 中看到 :${port}（进程仍在）"
+    if [[ -n "${file_pid:-}" && "$file_pid" != "$pid" ]]; then
+      echo "pid文件: ${file_pid}（与监听进程不一致，以监听为准）"
     fi
+    if command -v ss >/dev/null; then
+      ss -lntp 2>/dev/null | grep -E ":${port}\\b" || true
+    fi
+  elif [[ -n "${file_pid:-}" ]]; then
+    echo "状态: pid 文件进程仍在，但未监听 :${port}"
+    echo "PID:  ${file_pid}"
+    echo "PORT: ${port}"
   else
     echo "状态: 未运行"
     echo "PORT: ${port}"
@@ -225,7 +321,6 @@ cmd_push() {
     echo "仅支持 https remote，当前: ${remote%%@*}" >&2
     exit 1
   fi
-  # strip credentials if any, then inject token (never echo token)
   remote="${remote#https://}"
   remote="${remote#*@}"
   authed="https://x-access-token:${token}@${remote}"
@@ -233,7 +328,7 @@ cmd_push() {
   ahead="$(git rev-list --count "origin/${branch}..HEAD" 2>/dev/null || echo "?")"
   echo "==> git push HEAD:${branch}（仅推已有 commit，不自动 commit；本地领先约 ${ahead} 个 commit）"
   if ! git -c http.version=HTTP/1.1 push "$authed" "HEAD:${branch}"; then
-    echo "push 失败（未打印 token）。可检查 Contents 读写权限、网络，或：git -c http.version=HTTP/1.1 push …" >&2
+    echo "push 失败（未打印 token）。可检查 Contents 读写权限、网络。" >&2
     exit 1
   fi
   echo "push 完成"
