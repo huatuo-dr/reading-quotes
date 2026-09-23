@@ -294,8 +294,11 @@ cmd_log() {
 cmd_deploy() {
   load_env
   ensure_node
-  echo "==> 安装依赖"
-  npm install
+  # .env 常含 NODE_ENV=production；若带着它跑 npm install，会跳过
+  # devDependencies（typescript/vite 等），导致 `tsc: not found`。
+  # install/build 强制装齐构建依赖；start/restart 仍按 production 跑进程。
+  echo "==> 安装依赖（含构建用开发依赖）"
+  npm install --include=dev
   echo "==> 构建前端"
   npm run build
   mkdir -p logs
