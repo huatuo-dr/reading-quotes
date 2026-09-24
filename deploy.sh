@@ -7,6 +7,33 @@ cd "$ROOT"
 PID_FILE="logs/app.pid"
 LOG_FILE="logs/app.log"
 
+GIT_SYNC_LOG="logs/git-sync.log"
+
+append_git_sync_log() {
+  # usage: append_git_sync_log <action> <result> [sha] [reason...]
+  local action="$1"
+  local result="$2"
+  local sha="${3:-}"
+  shift 3 || true
+  local reason="$*"
+  mkdir -p logs
+  local line
+  line="$(date -u +%Y-%m-%dT%H:%M:%SZ) source=deploy-push action=${action} result=${result}"
+  if [[ -n "$sha" ]]; then
+    line="${line} sha=${sha}"
+  fi
+  if [[ -n "$reason" ]]; then
+    # strip token / authed URL fragments if any leaked into reason
+    reason="$(printf '%s' "$reason" | sed -E 's#https://[^/@]*:[^@/]+@#https://[REDACTED]@#g; s/x-access-token:[^@ ]+/x-access-token:[REDACTED]/g; s/ghp_[A-Za-z0-9]+/ghp_[REDACTED]/g; s/[[:space:]]+/ /g')"
+    if [[ -n "${GIT_TOKEN:-}" ]]; then
+      reason="${reason//${GIT_TOKEN}/[REDACTED]}"
+    fi
+    line="${line} reason=${reason}"
+  fi
+  printf '%s\n' "$line" >> "$GIT_SYNC_LOG"
+}
+
+
 usage() {
   cat <<'USAGE'
 用法: ./deploy.sh <command>
@@ -18,7 +45,7 @@ usage() {
   stop      停止服务（以监听 PORT 的进程为准）
   restart   先 stop 再 start（不重新 install/build）
   status    显示是否在跑、PID、PORT、监听状态
-  log       跟踪 logs/app.log（tail -f）
+  log       跟踪 logs/app.log（tail -f）；Git 同步见 logs/git-sync.log
   push      仅推送已有本地 commit 到远端（不自动 commit；读 .env 的 GIT_*）
 
 无参数或未知命令时等同 help，并以退出码 1 结束。
@@ -307,11 +334,12 @@ cmd_deploy() {
 
 cmd_push() {
   load_env
-  local token branch remote authed ahead
+  local token branch remote authed ahead sha
   token="${GIT_TOKEN:-}"
   token="$(echo -n "$token" | tr -d '[:space:]')"
   branch="${GIT_BRANCH:-main}"
   if [[ -z "$token" ]]; then
+    append_git_sync_log push fail "" "GIT_TOKEN is empty"
     echo "GIT_TOKEN 为空，无法 push" >&2
     exit 1
   fi
@@ -321,6 +349,7 @@ cmd_push() {
     remote="$(git remote get-url origin)"
   fi
   if [[ "$remote" != https://* ]]; then
+    append_git_sync_log push fail "" "remote is not https"
     echo "仅支持 https remote，当前: ${remote%%@*}" >&2
     exit 1
   fi
@@ -331,9 +360,15 @@ cmd_push() {
   ahead="$(git rev-list --count "origin/${branch}..HEAD" 2>/dev/null || echo "?")"
   echo "==> git push HEAD:${branch}（仅推已有 commit，不自动 commit；本地领先约 ${ahead} 个 commit）"
   if ! git -c http.version=HTTP/1.1 push "$authed" "HEAD:${branch}"; then
+    append_git_sync_log push fail "" "git push failed"
     echo "push 失败（未打印 token）。可检查 Contents 读写权限、网络。" >&2
     exit 1
   fi
+  sha="$(git rev-parse --short HEAD)"
+  append_git_sync_log push success "$sha"
+  # 临时 HTTPS push 不会更新 origin/<branch> 跟踪指针；成功后对齐，避免假 ahead
+  git update-ref "refs/remotes/origin/${branch}" HEAD
+  append_git_sync_log update-ref success "$sha" "refs/remotes/origin/${branch} -> HEAD"
   echo "push 完成"
 }
 
